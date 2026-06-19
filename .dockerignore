@@ -1,0 +1,10 @@
+# Docker ignore — keep the image lean
+.git
+.github
+__pycache__
+*.pyc
+tests/
+infra/
+README.md
+.env*
+*.md

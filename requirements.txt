@@ -1,0 +1,4 @@
+jaydebeapi>=1.2,<2
+JPype1>=1.4,<2
+boto3>=1.35,<2
+pyodbc>=5.0,<6       # ODBC backend (DB_BACKEND=odbc); requires IBM i Access ODBC Driver on the host
