@@ -5,6 +5,7 @@ Uses unittest.mock to patch jaydebeapi so tests run without a real database.
 """
 
 import csv
+import itertools
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -21,7 +22,10 @@ from src.exporter import TableResult, export_tables
 def _make_mock_cursor(columns: list[str], rows: list[list]):
     cursor = MagicMock()
     cursor.description = [(col, None, None, None, None, None, None) for col in columns]
-    cursor.fetchall.return_value = [tuple(r) for r in rows]
+    tuples = [tuple(r) for r in rows]
+    cursor.fetchall.return_value = tuples
+    # fetchmany: return all rows on first call, empty list on subsequent calls
+    cursor.fetchmany.side_effect = itertools.cycle([tuples, []])
     return cursor
 
 
@@ -37,7 +41,7 @@ _FAKE_JAR = "/fake/jt400.jar"
 class TestExportTables:
     """Tests for the export_tables function."""
 
-    @patch("src.exporter.jaydebeapi")
+    @patch("src.drivers.jdbc.jaydebeapi")
     def test_exports_single_table(self, mock_jaydebeapi):
         """A single table should produce one CSV file and a summary CSV."""
         columns = ["ID", "Name", "Value"]
@@ -53,7 +57,7 @@ class TestExportTables:
         mock_jaydebeapi.connect.return_value = mock_conn
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            results = export_tables(
+            results, _ = export_tables(
                 connection_string=_FAKE_JDBC,
                 tables=["TEST_TABLE"],
                 output_dir=tmp_dir,
@@ -82,7 +86,7 @@ class TestExportTables:
                 assert reader[1][0] == "TEST_TABLE"
                 assert reader[1][1] == "3"
 
-    @patch("src.exporter.jaydebeapi")
+    @patch("src.drivers.jdbc.jaydebeapi")
     def test_exports_multiple_tables(self, mock_jaydebeapi):
         """Multiple tables should each produce their own CSV."""
         mock_conn = MagicMock()
@@ -93,7 +97,7 @@ class TestExportTables:
         tables = ["TABLE_A", "TABLE_B", "TABLE_C"]
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            results = export_tables(
+            results, _ = export_tables(
                 connection_string=_FAKE_JDBC,
                 tables=tables,
                 output_dir=tmp_dir,
@@ -106,7 +110,7 @@ class TestExportTables:
                 assert results[i].table_name == name
                 assert (Path(tmp_dir) / f"{name}.csv").exists()
 
-    @patch("src.exporter.jaydebeapi")
+    @patch("src.drivers.jdbc.jaydebeapi")
     def test_empty_table(self, mock_jaydebeapi):
         """A table with zero rows should still produce a CSV with just the header."""
         mock_conn = MagicMock()
@@ -115,7 +119,7 @@ class TestExportTables:
         mock_jaydebeapi.connect.return_value = mock_conn
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            results = export_tables(
+            results, _ = export_tables(
                 connection_string=_FAKE_JDBC,
                 tables=["EMPTY_TABLE"],
                 output_dir=tmp_dir,
@@ -129,7 +133,7 @@ class TestExportTables:
                 reader = list(csv.reader(fh))
                 assert len(reader) == 1  # header only
 
-    @patch("src.exporter.jaydebeapi")
+    @patch("src.drivers.jdbc.jaydebeapi")
     def test_connection_failure_raises(self, mock_jaydebeapi):
         """If the connection test fails, the exception should propagate."""
         mock_jaydebeapi.connect.side_effect = Exception("Connection refused")
