@@ -22,7 +22,7 @@ terraform {
     }
   }
 
-  # Uncomment and configure for remote state:
+  # Configure for remote state:
   backend "s3" {
      bucket  = "nwci-pbi-bucket"
      key     = "jobpac-export/terraform.tfstate"
@@ -86,20 +86,31 @@ resource "aws_route_table_association" "private_b" {
 }
 
 # Routes to on-premises via Site-to-Site VPN
-resource "aws_route" "onprem_vpc" {
-  route_table_id         = var.route_table_id
-  destination_cidr_block = "10.0.0.0/16"
-  gateway_id             = var.vpn_gateway_id
-}
-
 resource "aws_route" "onprem_jobpac_db" {
   route_table_id         = var.route_table_id
   destination_cidr_block = "10.128.13.0/24"
   gateway_id             = var.vpn_gateway_id
 }
 
+resource "aws_route" "onprem_transit" {
+  route_table_id         = var.route_table_id
+  destination_cidr_block = var.onprem_transit_cidr_block
+  gateway_id             = var.vpn_gateway_id
+}
+
+# Enable BGP route propagation so the VGW automatically injects on-prem routes
+resource "aws_vpn_gateway_route_propagation" "private" {
+  vpn_gateway_id = var.vpn_gateway_id
+  route_table_id = var.route_table_id
+}
+
 # ---------------------------------------------------------------------------
-# Internet Gateway + public subnet (outbound internet for SES — no NAT cost)
+# Internet Gateway + public subnet
+#
+# The Fargate task runs here (assign_public_ip = true) so it can reach SES
+# directly via the IGW.  VPN routes are also added to this route table so the
+# same task can reach the on-prem DB2 via the Virtual Private Gateway — two
+# separate gateways, no NAT cost.
 # ---------------------------------------------------------------------------
 
 resource "aws_internet_gateway" "main" {
@@ -120,17 +131,38 @@ resource "aws_subnet" "public_a" {
 resource "aws_route_table" "public" {
   vpc_id = var.vpc_id
 
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.main.id
-  }
-
   tags = { Name = "${var.project_name}-public" }
 }
 
 resource "aws_route_table_association" "public_a" {
   subnet_id      = aws_subnet.public_a.id
   route_table_id = aws_route_table.public.id
+}
+
+resource "aws_vpn_gateway_route_propagation" "public" {
+  vpn_gateway_id = var.vpn_gateway_id
+  route_table_id = aws_route_table.public.id
+}
+
+# All routes are managed as separate aws_route resources to avoid the Terraform
+# conflict where inline route{} blocks in aws_route_table silently remove any
+# routes added by standalone aws_route resources on the same table.
+resource "aws_route" "public_igw" {
+  route_table_id         = aws_route_table.public.id
+  destination_cidr_block = "0.0.0.0/0"
+  gateway_id             = aws_internet_gateway.main.id
+}
+
+resource "aws_route" "public_onprem_jobpac_db" {
+  route_table_id         = aws_route_table.public.id
+  destination_cidr_block = "10.128.13.0/24"
+  gateway_id             = var.vpn_gateway_id
+}
+
+resource "aws_route" "public_onprem_transit" {
+  route_table_id         = aws_route_table.public.id
+  destination_cidr_block = var.onprem_transit_cidr_block
+  gateway_id             = var.vpn_gateway_id
 }
 
 # ---------------------------------------------------------------------------
@@ -331,12 +363,16 @@ resource "aws_security_group" "task" {
   vpc_id      = var.vpc_id
 
   # Egress to on-prem DB via site-to-site VPN
-  egress {
-    description = "ODBC to JobPac DB (on-prem via VPN)"
-    from_port   = var.jobpac_db_port
-    to_port     = var.jobpac_db_port
-    protocol    = "tcp"
-    cidr_blocks = [var.onprem_cidr_block]
+  # 449 = AS/400 Central Server (port mapper), 8471 = Database Host Server
+  dynamic "egress" {
+    for_each = var.jobpac_db_ports
+    content {
+      description = "jt400 JDBC to JobPac DB port ${egress.value} (on-prem via VPN)"
+      from_port   = egress.value
+      to_port     = egress.value
+      protocol    = "tcp"
+      cidr_blocks = [var.onprem_cidr_block, var.onprem_transit_cidr_block]
+    }
   }
 
   # Egress to AWS services (S3, SES, Secrets Manager, CloudWatch)
@@ -363,82 +399,16 @@ resource "aws_security_group" "task" {
 }
 
 # ---------------------------------------------------------------------------
-# VPC Endpoints (ECR, S3, CloudWatch Logs — required for private subnet access)
+# VPC Endpoints (S3 Gateway — free; ECR/CloudWatch/Secrets Manager use IGW)
 # ---------------------------------------------------------------------------
-
-locals {
-  endpoint_subnets = length(var.private_subnet_ids) > 0 ? var.private_subnet_ids : [aws_subnet.private_a.id, aws_subnet.private_b.id]
-}
-
-resource "aws_security_group" "vpc_endpoints" {
-  name_prefix = "${var.project_name}-endpoints-"
-  description = "Allow HTTPS from Fargate task to VPC interface endpoints"
-  vpc_id      = var.vpc_id
-
-  ingress {
-    description     = "HTTPS from Fargate task"
-    from_port       = 443
-    to_port         = 443
-    protocol        = "tcp"
-    security_groups = [aws_security_group.task.id]
-  }
-
-  tags = {
-    Name = "${var.project_name}-endpoints"
-  }
-}
-
-resource "aws_vpc_endpoint" "ecr_api" {
-  vpc_id              = var.vpc_id
-  service_name        = "com.amazonaws.${var.aws_region}.ecr.api"
-  vpc_endpoint_type   = "Interface"
-  subnet_ids          = local.endpoint_subnets
-  security_group_ids  = [aws_security_group.vpc_endpoints.id]
-  private_dns_enabled = true
-
-  tags = { Name = "${var.project_name}-ecr-api" }
-}
-
-resource "aws_vpc_endpoint" "ecr_dkr" {
-  vpc_id              = var.vpc_id
-  service_name        = "com.amazonaws.${var.aws_region}.ecr.dkr"
-  vpc_endpoint_type   = "Interface"
-  subnet_ids          = local.endpoint_subnets
-  security_group_ids  = [aws_security_group.vpc_endpoints.id]
-  private_dns_enabled = true
-
-  tags = { Name = "${var.project_name}-ecr-dkr" }
-}
 
 resource "aws_vpc_endpoint" "s3" {
   vpc_id            = var.vpc_id
   service_name      = "com.amazonaws.${var.aws_region}.s3"
   vpc_endpoint_type = "Gateway"
-  route_table_ids   = [var.route_table_id]
+  route_table_ids   = [var.route_table_id, aws_route_table.public.id]
 
   tags = { Name = "${var.project_name}-s3" }
-}
-
-resource "aws_vpc_endpoint" "cloudwatch_logs" {
-  vpc_id              = var.vpc_id
-  service_name        = "com.amazonaws.${var.aws_region}.logs"
-  vpc_endpoint_type   = "Interface"
-  subnet_ids          = local.endpoint_subnets
-  security_group_ids  = [aws_security_group.vpc_endpoints.id]
-  private_dns_enabled = true
-
-  tags = { Name = "${var.project_name}-logs" }
-}
-
-resource "aws_vpc_endpoint" "secretsmanager" {
-  vpc_id              = var.vpc_id
-  service_name        = "com.amazonaws.${var.aws_region}.secretsmanager"
-  vpc_endpoint_type   = "Interface"
-  subnet_ids          = local.endpoint_subnets
-  security_group_ids  = [aws_security_group.vpc_endpoints.id]
-  private_dns_enabled = true
-
-  tags = { Name = "${var.project_name}-secretsmanager" }
 }
 
 # ---------------------------------------------------------------------------
@@ -472,6 +442,7 @@ resource "aws_ecs_task_definition" "main" {
       { name = "AWS_REGION", value = var.aws_region },
       { name = "EMAIL_SECRET_NAME", value = var.email_secret_name },
       { name = "SNS_TOPIC_ARN", value = var.sns_topic_arn },
+      { name = "JDBC_SECURE", value = "false" },
     ]
 
     logConfiguration = {
@@ -559,9 +530,9 @@ resource "aws_scheduler_schedule" "main" {
       task_count          = 1
 
       network_configuration {
-        subnets          = local.endpoint_subnets
+        subnets          = [aws_subnet.public_a.id]
         security_groups  = [aws_security_group.task.id]
-        assign_public_ip = false
+        assign_public_ip = true
       }
     }
 

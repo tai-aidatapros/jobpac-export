@@ -42,7 +42,7 @@ class OdbcCredentials:
 
     @property
     def jdbc_url(self) -> str:
-        return f"jdbc:as400://{self.host}/{self.database}"
+        return f"jdbc:as400://{self.host}/{self.database};secure=true"
 
 
 @dataclass
@@ -75,6 +75,8 @@ class AppConfig:
 
     # Tables
     tables: list[str] = field(default_factory=list)
+    table_chunk_sizes: dict[str, int] = field(default_factory=dict)
+    table_exclude_columns: dict[str, list[str]] = field(default_factory=dict)
     max_workers: int = 2
 
     # DB backend: "jdbc" (default) or "odbc"
@@ -82,6 +84,9 @@ class AppConfig:
 
     # AWS region (used for boto3 clients)
     aws_region: str = "ap-southeast-2"
+
+    # When True, all CSV fields are written as quoted strings (text type)
+    csv_force_text: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -101,27 +106,52 @@ def _get_secret(secret_name: str, region: str) -> dict:
 # ---------------------------------------------------------------------------
 # Table list loader
 # ---------------------------------------------------------------------------
-def _load_tables(path: str) -> list[str]:
+def _load_tables(path: str) -> tuple[list[str], dict[str, int], dict[str, list[str]]]:
     """
-    Load the list of table names from a CSV file.
+    Load the list of table names and optional per-table settings from a CSV file.
 
-    The CSV should have a header row; every subsequent row in the first column
-    is treated as a table name.  This mirrors the original PowerShell logic of
-    iterating over all column *values* in JobpacTables.csv.
+    Expected columns (only TableName is required):
+        TableName      — IBM i table name
+        ChunkSize      — optional int; when set, the table is exported in RRN-based
+                         chunks of this size to avoid long-lived connections dropping
+        ExcludeColumns — optional semicolon-separated list of column names to skip
+                         (e.g. "LONGDESC;BINARYDATA") — useful to drop LOB columns
+
+    Returns a (tables, chunk_sizes, exclude_columns) tuple.
     """
     tables: list[str] = []
+    chunk_sizes: dict[str, int] = {}
+    exclude_columns: dict[str, list[str]] = {}
     with open(path, newline="") as fh:
         reader = csv.reader(fh)
-        header = next(reader, None)  # skip header
+        header = next(reader, None)
         if header is None:
-            return tables
+            return tables, chunk_sizes, exclude_columns
+        normalized = [h.strip().lower() for h in header]
+        chunk_col = normalized.index("chunksize") if "chunksize" in normalized else -1
+        excl_col = normalized.index("excludecolumns") if "excludecolumns" in normalized else -1
         for row in reader:
-            for cell in row:
-                name = cell.strip()
-                if name:
-                    tables.append(name)
+            if not row:
+                continue
+            name = row[0].strip()
+            if not name:
+                continue
+            tables.append(name)
+            if chunk_col >= 0 and len(row) > chunk_col:
+                raw = row[chunk_col].strip()
+                if raw:
+                    try:
+                        chunk_sizes[name] = int(raw)
+                    except ValueError:
+                        logger.warning("Invalid ChunkSize %r for table %s — ignored", raw, name)
+            if excl_col >= 0 and len(row) > excl_col:
+                raw = row[excl_col].strip()
+                if raw:
+                    cols = [c.strip() for c in raw.split(";") if c.strip()]
+                    if cols:
+                        exclude_columns[name] = cols
     logger.info("Loaded %d table(s) from %s", len(tables), path)
-    return tables
+    return tables, chunk_sizes, exclude_columns
 
 
 # ---------------------------------------------------------------------------
@@ -190,9 +220,10 @@ def load_config() -> AppConfig:
 
     # --- Tables --------------------------------------------------------------
     tables_path = os.environ.get("TABLES_PATH", _DEFAULT_TABLES_PATH)
-    tables = _load_tables(tables_path)
+    tables, table_chunk_sizes, table_exclude_columns = _load_tables(tables_path)
     max_workers = int(os.environ.get("MAX_WORKERS", "2"))
     db_backend = os.environ.get("DB_BACKEND", "jdbc").lower()
+    csv_force_text = os.environ.get("CSV_FORCE_TEXT", "true").lower() in ("true", "1", "yes")
 
     config = AppConfig(
         odbc_creds=odbc_creds,
@@ -203,9 +234,12 @@ def load_config() -> AppConfig:
         email_creds=email_creds,
         sns_topic_arn=sns_topic_arn,
         tables=tables,
+        table_chunk_sizes=table_chunk_sizes,
+        table_exclude_columns=table_exclude_columns,
         max_workers=max_workers,
         db_backend=db_backend,
         aws_region=region,
+        csv_force_text=csv_force_text,
     )
 
     logger.info(

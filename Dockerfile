@@ -4,7 +4,7 @@ FROM python:3.12-slim
 # Install Java runtime and download jt400 JDBC driver
 # ---------------------------------------------------------------------------
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends default-jre-headless curl && \
+    apt-get install -y --no-install-recommends default-jre-headless curl traceroute iputils-ping iproute2 && \
     rm -rf /var/lib/apt/lists/*
 
 # Create a stable, arch-independent JAVA_HOME symlink so JPype1 can find libjvm.so
@@ -41,4 +41,4 @@ ENV JT400_JAR=/opt/jt400.jar
 # Flush Python stdout/stderr immediately so logs appear in CloudWatch without buffering
 ENV PYTHONUNBUFFERED=1
 
-ENTRYPOINT ["python", "-m", "src.main"]
+CMD ["python", "-m", "src.main"]

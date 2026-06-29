@@ -45,19 +45,25 @@ variable "route_table_id" {
 variable "vpn_gateway_id" {
   description = "Virtual Private Gateway ID for Site-to-Site VPN routes to on-premises"
   type        = string
-  default     = "vgw-051bc5684227443e2"
+  default     = "vgw-03094d1cb7c47bc46"
 }
 
 variable "onprem_cidr_block" {
-  description = "CIDR block of the on-premises network (for security group egress to JobPac DB)"
+  description = "CIDR block of the on-premises DB subnet (for security group egress to JobPac DB)"
   type        = string
   default     = "10.128.13.0/24"
 }
 
-variable "jobpac_db_port" {
-  description = "Port the JobPac database listens on"
-  type        = number
-  default     = 446 # AS/400 JDBC (jt400) default port
+variable "onprem_transit_cidr_block" {
+  description = "CIDR block of the on-premises VPN transit network that routes traffic to the DB subnet"
+  type        = string
+  default     = "10.220.210.0/24"
+}
+
+variable "jobpac_db_ports" {
+  description = "Ports required by jt400 JDBC: 449 (Central Server / port mapper) + 8471 (Database Host Server)"
+  type        = list(number)
+  default     = [449, 8471]
 }
 
 # ---------------------------------------------------------------------------

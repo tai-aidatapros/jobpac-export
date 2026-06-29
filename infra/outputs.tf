@@ -46,6 +46,16 @@ output "scheduler_arn" {
 # Useful commands (displayed after terraform apply)
 # ---------------------------------------------------------------------------
 
+output "public_subnet_id" {
+  description = "Public subnet ID used by Fargate tasks (has VPN + IGW routes)"
+  value       = aws_subnet.public_a.id
+}
+
+output "task_security_group_id" {
+  description = "Security group ID attached to Fargate tasks"
+  value       = aws_security_group.task.id
+}
+
 output "manual_run_command" {
   description = "AWS CLI command to manually trigger the Fargate task"
   value       = <<-EOT
