@@ -201,9 +201,10 @@ def _export_table_chunked(
                     conn.close()
 
                 row_count += chunk_rows
+                pct = (chunk_num / total_chunks * 100) if total_chunks else 100.0
                 logger.info(
-                    "  %s chunk %d/%d (RRN %d–%d): %d rows",
-                    table_name, chunk_num, total_chunks, start_rrn, end_rrn, chunk_rows,
+                    "  %s chunk %d/%d (RRN %d–%d): %d rows — %.1f%% complete",
+                    table_name, chunk_num, total_chunks, start_rrn, end_rrn, chunk_rows, pct,
                 )
                 start_rrn = end_rrn + 1
     except Exception:
@@ -258,7 +259,20 @@ def _export_single_table(
     else:
         query = f'SELECT * FROM "{table_name}" WITH UR'  # noqa: S608
 
-    logger.info("Exporting table %s …", table_name)
+    total_rows: Optional[int] = None
+    try:
+        _count_conn = connect_fn()
+        try:
+            _count_cur = _count_conn.cursor()
+            _count_cur.execute(f'SELECT COUNT(*) FROM "{table_name}" WITH UR')
+            _raw = _count_cur.fetchone()
+            total_rows = int(_raw[0]) if (_raw and _raw[0] is not None) else 0
+        finally:
+            _count_conn.close()
+    except Exception:
+        logger.warning("  %s: could not determine total row count for progress tracking", table_name)
+
+    logger.info("Exporting table %s (%s rows) …", table_name, total_rows if total_rows is not None else "unknown")
 
     last_exc: BaseException | None = None
     for attempt in range(1, _MAX_TABLE_RETRIES + 2):  # attempts: 1, 2, 3
@@ -291,6 +305,11 @@ def _export_single_table(
                     for row in batch:
                         writer.writerow([_format_value(v, force_text) for v in row])
                     row_count += len(batch)
+                    if total_rows:
+                        pct = min(row_count / total_rows * 100, 100.0)
+                        logger.info("  %s: %d/%d rows — %.1f%% complete", table_name, row_count, total_rows, pct)
+                    else:
+                        logger.info("  %s: %d rows fetched so far", table_name, row_count)
         except InterruptedError:
             csv_path.unlink(missing_ok=True)
             raise

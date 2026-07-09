@@ -14,7 +14,9 @@ TF_SG        := $(shell cd infra && AWS_PROFILE=$(AWS_PROFILE) terraform output 
 SUBNET       := $(or $(TF_SUBNET),subnet-05a0fc40e439cffd9)
 SG           := $(or $(TF_SG),sg-04ad480df46a87f0e)
 
-.PHONY: build build-local push deploy run run-local run-native logs check-connectivity test
+.PHONY: build build-local push deploy run run-local run-native run-tables run-remote-tables logs check-connectivity test
+
+comma := ,
 
 test:
 	python3 -m pytest tests/
@@ -70,6 +72,21 @@ run-native:
 run-tables:
 	@test -n "$(TABLES)" || (echo "Usage: make run-tables TABLES=TABLE1,TABLE2" && exit 1)
 	bash -c 'set -a && source .env && set +a && PYTHONPATH=. .venv/bin/python3 src/main.py --tables "$(TABLES)" $(if $(MAX_WORKERS),--max-workers $(MAX_WORKERS),)'
+
+# Run specific tables on ECS Fargate (remote), same as `run` but scoped to TABLES
+run-remote-tables:
+	@test -n "$(TABLES)" || (echo "Usage: make run-remote-tables TABLES=TABLE1,TABLE2" && exit 1)
+	AWS_PROFILE=$(AWS_PROFILE) aws ecs run-task \
+	  --cluster $(IMAGE_NAME) \
+	  --task-definition $(IMAGE_NAME) \
+	  --launch-type FARGATE \
+	  --network-configuration "awsvpcConfiguration={subnets=[$(SUBNET)],securityGroups=[$(SG)],assignPublicIp=ENABLED}" \
+	  --region $(AWS_REGION) \
+	  --overrides '{"containerOverrides":[{"name":"$(IMAGE_NAME)","command":["python","-m","src.main","--tables","$(TABLES)"$(if $(MAX_WORKERS),$(comma)"--max-workers"$(comma)"$(MAX_WORKERS)",)]}]}' \
+	  --no-cli-pager || (echo "ERROR: aws ecs run-task failed — check output above" && exit 1)
+	@echo "Task submitted — tailing logs (Ctrl+C to stop)..."
+	@sleep 5
+	$(MAKE) logs
 
 diagnose:
 	bash -c 'set -a && source .env && set +a && PYTHONPATH=. .venv/bin/python3 scripts/diagnose_table.py $(TABLE)'
