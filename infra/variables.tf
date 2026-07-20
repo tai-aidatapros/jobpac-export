@@ -45,7 +45,7 @@ variable "route_table_id" {
 variable "vpn_gateway_id" {
   description = "Virtual Private Gateway ID for Site-to-Site VPN routes to on-premises"
   type        = string
-  default     = "vgw-03094d1cb7c47bc46"
+  default     = "vgw-051bc5684227443e2"
 }
 
 variable "onprem_cidr_block" {
@@ -93,9 +93,9 @@ variable "s3_prefix" {
 # ---------------------------------------------------------------------------
 
 variable "schedule_expression" {
-  description = "EventBridge Scheduler cron expression (UTC). Example: cron(0 16 * * ? *) = 2 AM AEST"
+  description = "EventBridge Scheduler cron expression (UTC). Example: cron(0 16 ? * MON-FRI *) = 2 AM AEST, Mon-Fri only"
   type        = string
-  default     = "cron(0 16 * * ? *)"
+  default     = "cron(0 16 ? * MON-FRI *)"
 }
 
 variable "schedule_timezone" {

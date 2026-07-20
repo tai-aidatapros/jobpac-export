@@ -98,12 +98,6 @@ resource "aws_route" "onprem_transit" {
   gateway_id             = var.vpn_gateway_id
 }
 
-# Enable BGP route propagation so the VGW automatically injects on-prem routes
-resource "aws_vpn_gateway_route_propagation" "private" {
-  vpn_gateway_id = var.vpn_gateway_id
-  route_table_id = var.route_table_id
-}
-
 # ---------------------------------------------------------------------------
 # Internet Gateway + public subnet
 #
@@ -136,11 +130,6 @@ resource "aws_route_table" "public" {
 
 resource "aws_route_table_association" "public_a" {
   subnet_id      = aws_subnet.public_a.id
-  route_table_id = aws_route_table.public.id
-}
-
-resource "aws_vpn_gateway_route_propagation" "public" {
-  vpn_gateway_id = var.vpn_gateway_id
   route_table_id = aws_route_table.public.id
 }
 
