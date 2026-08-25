@@ -519,7 +519,10 @@ resource "aws_scheduler_schedule" "main" {
       task_count          = 1
 
       network_configuration {
-        subnets          = [aws_subnet.public_a.id]
+        # TEMPORARY: routed through the bridge_temp subnet (temp_vpn_bridge.tf)
+        # while the on-prem Site-to-Site VPN routing is still being finished.
+        # Revert to aws_subnet.public_a.id once that's confirmed live.
+        subnets          = [aws_subnet.bridge_temp.id]
         security_groups  = [aws_security_group.task.id]
         assign_public_ip = true
       }
