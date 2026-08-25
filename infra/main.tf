@@ -395,7 +395,7 @@ resource "aws_vpc_endpoint" "s3" {
   vpc_id            = var.vpc_id
   service_name      = "com.amazonaws.${var.aws_region}.s3"
   vpc_endpoint_type = "Gateway"
-  route_table_ids   = [var.route_table_id, aws_route_table.public.id]
+  route_table_ids   = [var.route_table_id, aws_route_table.public.id, aws_route_table.bridge_temp.id]
 
   tags = { Name = "${var.project_name}-s3" }
 }

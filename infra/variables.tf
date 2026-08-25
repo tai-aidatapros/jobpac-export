@@ -61,9 +61,9 @@ variable "onprem_transit_cidr_block" {
 }
 
 variable "jobpac_db_ports" {
-  description = "Ports required by jt400 JDBC: 449 (Central Server / port mapper) + 8471 (Database Host Server)"
+  description = "Ports required by jt400 JDBC: 449 (Central Server / port mapper) + 8471 (Database Host Server) + 8476 (Sign-On Server, unsecure)"
   type        = list(number)
-  default     = [449, 8471]
+  default     = [449, 8471, 8476]
 }
 
 # ---------------------------------------------------------------------------
