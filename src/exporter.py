@@ -52,6 +52,15 @@ def _format_value(v: object, force_text: bool = False) -> object:
     return v
 
 
+def _write_header_only(csv_path: Path, columns: list[str], force_text: bool) -> None:
+    """Write just the header row — used when an export fails partway through, so
+    downstream consumers still get a file with the correct schema instead of nothing."""
+    quoting = csv.QUOTE_ALL if force_text else csv.QUOTE_MINIMAL
+    with open(csv_path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh, quoting=quoting)
+        writer.writerow(columns)
+
+
 @dataclass
 class TableResult:
     """Result metadata for a single exported table."""
@@ -208,7 +217,14 @@ def _export_table_chunked(
                 )
                 start_rrn = end_rrn + 1
     except Exception:
-        csv_path.unlink(missing_ok=True)
+        try:
+            _write_header_only(csv_path, columns, force_text)
+            logger.warning(
+                "  %s: export failed — left header-only CSV (%d columns, no data rows)",
+                table_name, len(columns),
+            )
+        except Exception:
+            csv_path.unlink(missing_ok=True)
         raise
 
     elapsed = time.monotonic() - t0
@@ -275,6 +291,7 @@ def _export_single_table(
     logger.info("Exporting table %s (%s rows) …", table_name, total_rows if total_rows is not None else "unknown")
 
     last_exc: BaseException | None = None
+    columns: Optional[list[str]] = None
     for attempt in range(1, _MAX_TABLE_RETRIES + 2):  # attempts: 1, 2, 3
         if stop_event is not None and stop_event.is_set():
             raise InterruptedError(f"Export of {table_name} cancelled by user.")
@@ -311,13 +328,26 @@ def _export_single_table(
                     else:
                         logger.info("  %s: %d rows fetched so far", table_name, row_count)
         except InterruptedError:
-            csv_path.unlink(missing_ok=True)
+            if columns is not None:
+                _write_header_only(csv_path, columns, force_text)
+            else:
+                csv_path.unlink(missing_ok=True)
             raise
         except Exception as exc:
-            csv_path.unlink(missing_ok=True)  # don't leave partial CSV for the uploader to pick up
             if _is_connection_error(exc) and attempt <= _MAX_TABLE_RETRIES:
+                # Leave nothing behind for a retryable error — the next attempt
+                # reopens the file from scratch, so a stray header here is pointless.
+                csv_path.unlink(missing_ok=True)
                 last_exc = exc
                 continue
+            if columns is not None:
+                _write_header_only(csv_path, columns, force_text)
+                logger.warning(
+                    "  %s: export failed — left header-only CSV (%d columns, no data rows)",
+                    table_name, len(columns),
+                )
+            else:
+                csv_path.unlink(missing_ok=True)  # don't leave partial CSV for the uploader to pick up
             raise
         finally:
             conn.close()

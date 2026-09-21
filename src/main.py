@@ -90,6 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     config = None
     uploaded_results: list[TableResult] = []
     upload_failed: list[str] = []
+    header_only_uploaded: list[str] = []
     job_start = datetime.now(timezone.utc)
     t0 = time.monotonic()
     try:
@@ -175,6 +176,26 @@ def main(argv: list[str] | None = None) -> int:
                 len(skipped),
             )
 
+            # ── 4b. Upload header-only CSVs left behind by failed tables ───
+            # These go to the timestamped run prefix only — never to latest/,
+            # since that would silently overwrite a prior good export with an
+            # empty file the next time this table fails.
+            for table_name in skipped:
+                header_csv = Path(tmp_dir) / f"{table_name}.csv"
+                if not header_csv.exists():
+                    continue
+                try:
+                    upload_single_csv(
+                        csv_path=str(header_csv),
+                        bucket=config.s3_bucket,
+                        run_prefix=run_prefix,
+                        region=config.aws_region,
+                    )
+                    header_only_uploaded.append(table_name)
+                    logger.info("Uploaded header-only CSV for failed table %s.", table_name)
+                except Exception:
+                    logger.exception("Failed to upload header-only CSV for %s.", table_name)
+
             # ── 5. Write summary CSV and upload it ─────────────────────
             summary_path = Path(tmp_dir) / "JobPacTableProcessingInfo.csv"
             try:
@@ -209,7 +230,11 @@ def main(argv: list[str] | None = None) -> int:
             f"  ✔ {r.table_name}: {r.row_count:,} rows ({r.elapsed_seconds:.1f}s)"
             for r in results
         )
-        skipped_lines = "\n".join(f"  ✘ {t}: export failed" for t in skipped)
+        skipped_lines = "\n".join(
+            f"  ✘ {t}: export failed"
+            + (" (header-only CSV uploaded, no data)" if t in header_only_uploaded else " (no file uploaded)")
+            for t in skipped
+        )
         upload_fail_lines = "\n".join(f"  ✘ {t}: upload failed" for t in upload_failed)
 
         body = (
