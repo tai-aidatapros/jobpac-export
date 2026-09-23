@@ -22,10 +22,16 @@ terraform {
     }
   }
 
-  # Configure for remote state:
+  # State lives under a dedicated terraform-state/ namespace, deliberately NOT
+  # under the jobpac-export/ prefix — that prefix is the S3 destination for
+  # uploaded CSVs. It used to live at jobpac-export/terraform.tfstate, which
+  # collided with that prefix (same landmine hit box-folder-sync's state,
+  # where clear_s3_prefix() wiped it on every run — this uploader doesn't
+  # clear-before-write today, but there's no reason to leave the collision
+  # in place for a future change to trip over).
   backend "s3" {
      bucket  = "nwci-pbi-bucket"
-     key     = "jobpac-export/terraform.tfstate"
+     key     = "terraform-state/jobpac-export.tfstate"
      region  = "ap-southeast-2"
      profile = "NWCI-Prod"
   }
