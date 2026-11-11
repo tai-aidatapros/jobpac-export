@@ -6,7 +6,7 @@ Guidance for Claude Code sessions working in this repository.
 
 JobPac Data Export — a scheduled ECS Fargate task (Python) that pulls tables from an
 on-prem AS/400 (IBM i / DB2) JobPac database over JDBC (`jt400`), writes them to S3 as
-CSV, and sends a completion notification via SES. Runs on a cron schedule (EventBridge
+CSV, and sends an SES email only when the run (or any table) fails. Runs on a cron schedule (EventBridge
 Scheduler), Monday–Friday 2 AM Australia/Brisbane. See `README.md` for the general
 architecture, config, and local dev instructions.
 

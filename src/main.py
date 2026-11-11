@@ -10,10 +10,11 @@ Workflow:
     3. Test S3 bucket accessibility → on failure, send alert email & exit(1)
     4. Export all tables to CSV in a temporary directory
     5. Upload all CSVs to S3
-    6. Send success notification email
+    6. Send a notification email only if any table failed to export/upload
+       (a fully successful run sends no email)
     7. Exit(0)
 
-Any unhandled exception triggers a failure notification before re-raising.
+Any unhandled exception triggers a failure notification before exiting(1).
 """
 
 from __future__ import annotations
@@ -225,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:
             if upload_failed:
                 logger.warning("Failed to upload %d table(s) to S3: %s", len(upload_failed), ", ".join(upload_failed))
 
-        # ── 7. Success notification ────────────────────────────────────
+        # ── 7. Partial-failure notification (no email on a clean run) ───
         success_lines = "\n".join(
             f"  ✔ {r.table_name}: {r.row_count:,} rows ({r.elapsed_seconds:.1f}s)"
             for r in results
@@ -238,7 +239,7 @@ def main(argv: list[str] | None = None) -> int:
         upload_fail_lines = "\n".join(f"  ✘ {t}: upload failed" for t in upload_failed)
 
         body = (
-            f"<h3>Jobpac Refresh Completed</h3>"
+            f"<h3>Jobpac Refresh Completed With Failures</h3>"
             f"<p>Exported <b>{len(results)}</b> table(s) ({total_rows:,} total rows) "
             f"to <code>s3://{config.s3_bucket}/{run_prefix}</code>"
             + (f" — <b>{len(skipped)} export failed</b>" if skipped else "")
@@ -250,8 +251,11 @@ def main(argv: list[str] | None = None) -> int:
             + "</pre>"
         )
 
-        if config.notification_recipients:
-            send_notification(config, subject="Jobpac Refresh", body=body)
+        has_failures = bool(skipped or upload_failed)
+        if has_failures and config.notification_recipients:
+            send_notification(config, subject="Jobpac Refresh — Partial Failure", body=body)
+        elif not has_failures:
+            logger.info("All tables exported and uploaded — no notification sent.")
 
         job_end = datetime.now(timezone.utc)
         elapsed = time.monotonic() - t0
@@ -295,7 +299,7 @@ def main(argv: list[str] | None = None) -> int:
                     f"<h3>Jobpac Database Access Failed</h3>"
                     f"<pre>{error_detail}</pre>"
                 )
-                send_notification(config, subject="Jobpac Refresh", body=body)
+                send_notification(config, subject="Jobpac Refresh — FAILED", body=body)
             except Exception:
                 logger.exception("Failed to send failure notification email.")
 

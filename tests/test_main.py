@@ -1,8 +1,9 @@
 """
-Unit tests for src/main.py pre-flight connectivity checks.
+Unit tests for src/main.py.
 
 Verifies that the task exits with code 1 and sends an alert (without
-starting the export) when any upstream hop is unreachable.
+starting the export) when any upstream hop is unreachable, and that a
+notification email is sent only when something failed.
 """
 
 from unittest.mock import MagicMock, patch
@@ -41,60 +42,103 @@ def _make_config(host: str = "10.128.13.219") -> MagicMock:
 class TestS3ConnectivityCheck:
     """Task must stop before exporting when S3 is unreachable."""
 
+    @patch("src.main.network_diagnostics")
     @patch("src.main.send_notification")
     @patch("src.main.export_tables")
     @patch("src.main._check_s3_reachable", return_value=False)
     @patch("src.main.load_config")
     def test_exits_1_when_s3_unreachable(
-        self, mock_cfg, _mock_s3, mock_export, mock_notify
+        self, mock_cfg, _mock_s3, mock_export, mock_notify, _mock_diag
     ):
         mock_cfg.return_value = _make_config()
 
-        result = main()
+        result = main([])
 
         assert result == 1, "main() must return 1 when S3 is unreachable"
         mock_export.assert_not_called()
 
+    @patch("src.main.network_diagnostics")
     @patch("src.main.send_notification")
     @patch("src.main.export_tables")
     @patch("src.main._check_s3_reachable", return_value=False)
     @patch("src.main.load_config")
     def test_sends_alert_when_s3_unreachable(
-        self, mock_cfg, _mock_s3, _mock_export, mock_notify
+        self, mock_cfg, _mock_s3, _mock_export, mock_notify, _mock_diag
     ):
         mock_cfg.return_value = _make_config()
 
-        main()
+        main([])
 
         mock_notify.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
-# Happy path — both hops reachable
+# Export run — notification only on failure
 # ---------------------------------------------------------------------------
 
-class TestHappyPath:
-    """When all connectivity checks pass, the export runs to completion."""
+def _run_export(results, skipped, upload_side_effect=None):
+    """Run main() with all external calls mocked; return (rc, mock_notify)."""
+    with patch("src.main.load_config", return_value=_make_config()), \
+         patch("src.main._check_s3_reachable", return_value=True), \
+         patch("src.main.network_diagnostics"), \
+         patch("src.main.update_latest_pointers"), \
+         patch("src.main.upload_single_csv", side_effect=upload_side_effect), \
+         patch("src.main.send_notification") as mock_notify, \
+         patch("src.main.export_tables") as mock_export:
 
-    @patch("src.main.send_notification")
-    @patch("src.main.upload_csvs", return_value=["current/2026-01-01/TABLE_A.csv"])
-    @patch("src.main.export_tables")
-    @patch("src.main._check_s3_reachable", return_value=True)
-    @patch("src.main.load_config")
-    def test_returns_0_on_success(
-        self, mock_cfg, _mock_s3, mock_export, mock_upload, mock_notify
-    ):
-        cfg = _make_config()
-        mock_cfg.return_value = cfg
+        def fake_export(**kwargs):
+            for r in results:
+                kwargs["on_table_complete"](r)
+            return results, skipped
 
+        mock_export.side_effect = fake_export
+        rc = main([])
+    return rc, mock_notify
+
+
+class TestExportNotifications:
+    """Email is sent only when the run has failures."""
+
+    def test_clean_run_returns_0_and_sends_no_email(self):
         from src.exporter import TableResult
-        mock_export.return_value = (
-            [TableResult("TABLE_A", 42, "/tmp/TABLE_A.csv", 1.2)],
-            [],
+        rc, mock_notify = _run_export(
+            [TableResult("TABLE_A", 42, "/tmp/TABLE_A.csv", 1.2)], []
         )
+        assert rc == 0
+        mock_notify.assert_not_called()
 
-        result = main()
+    def test_export_failure_sends_email(self):
+        from src.exporter import TableResult
+        rc, mock_notify = _run_export(
+            [TableResult("TABLE_A", 42, "/tmp/TABLE_A.csv", 1.2)], ["TABLE_B"]
+        )
+        assert rc == 0
+        mock_notify.assert_called_once()
+        assert "TABLE_B" in mock_notify.call_args.kwargs["body"]
+        assert "Failure" in mock_notify.call_args.kwargs["subject"]
 
-        assert result == 0
-        mock_export.assert_called_once()
-        mock_upload.assert_called_once()
+    def test_upload_failure_sends_email(self):
+        from src.exporter import TableResult
+
+        def fail_table_a(csv_path, **_):
+            if str(csv_path).endswith("TABLE_A.csv"):
+                raise RuntimeError("boom")
+
+        rc, mock_notify = _run_export(
+            [TableResult("TABLE_A", 42, "/tmp/TABLE_A.csv", 1.2)], [],
+            upload_side_effect=fail_table_a,
+        )
+        assert rc == 0
+        mock_notify.assert_called_once()
+        assert "upload failed" in mock_notify.call_args.kwargs["body"]
+
+    def test_unhandled_exception_sends_failure_email(self):
+        with patch("src.main.load_config", return_value=_make_config()), \
+             patch("src.main._check_s3_reachable", return_value=True), \
+             patch("src.main.network_diagnostics"), \
+             patch("src.main.send_notification") as mock_notify, \
+             patch("src.main.export_tables", side_effect=RuntimeError("db down")):
+            rc = main([])
+        assert rc == 1
+        mock_notify.assert_called_once()
+        assert "FAILED" in mock_notify.call_args.kwargs["subject"]
